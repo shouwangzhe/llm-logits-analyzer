@@ -8,6 +8,6 @@
 | [20260318_glm5_v2.md](20260318_glm5_v2.md) | 2026-03-18 | `计算1+1等于多少，请详细解释` | 改进版（含三种还原方式对比） |
 | [20260321a_glm5.md](20260321a_glm5.md) | 2026-03-21 | `计算1+1等于多少，请详细解释` | prefill 采集前版本（output 1260 字符 + reasoning 1757 字符） |
 | [20260321b_glm5.md](20260321b_glm5.md) | 2026-03-21 | `计算1+1等于多少，请详细解释` | prefill 采集后版本（output 935 字符，100% 重建验证） |
-| [20260321b_glm5_quantum.md](20260321b_glm5_quantum.md) | 2026-03-21 | 量子纠缠解释 | 较长输出场景分析 |
+| [20260322_glm5_simple_math.md](20260322_glm5_simple_math.md) | 2026-03-22 | `1+1等于几？` | 简单数学问题（50 cycles，accept rate 58.7%） |
 
 所有报告均由 `logits_analyzer.skills.complete_analysis` 生成，使用 GLM-5 + EAGLE speculative decoding。
