@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Output reconstruction now accounts for prefill token directly from profiler data, eliminating the last gap in 100% reconstruction accuracy
+- **Import fix in `eagle_worker.py` hook**: corrected `from sglang_profiler import get_cycle_collector` → `from logits_analyzer import get_cycle_collector` (package was renamed; using the old name causes `ModuleNotFoundError: No module named 'sglang_profiler'`)
+- **Log prefix fix**: updated `[sglang-profiler]` → `[logits-analyzer]` in EAGLEWorker init log message
+
+### Documentation
+
+- Added **SGLang 插桩指南** to SKILLS.md and README.md: step-by-step guide with exact code blocks for all 5 hook injection points in `eagle_worker.py`
 
 ---
 

@@ -43,7 +43,24 @@ cd logits_analyzer
 pip install -e .
 ```
 
-#### 2. 启动推理框架（开启采集）
+#### 2. 插桩推理框架（首次使用，一次性操作）
+
+**SGLang 用户**需要将采集 hook 插入 `python/sglang/srt/speculative/eagle_worker.py`，共 5 个代码块（约 30 行）：
+
+| Hook 位置 | 作用 |
+|-----------|------|
+| 文件顶部（stdlib import 之后） | 初始化 collector，`sys.path` 指向 `logits_analyzer/` 父目录 |
+| `EAGLEWorker.__init__` 末尾 | 设置 tp_rank 和 tokenizer（rank>0 自动跳过） |
+| `forward_target_extend` —— forward 之后 | 采集 prefill 第一个 token |
+| `forward_draft_extend_multi_step` —— tree_info 构建后 | 采集 draft logits |
+| `forward_verify_multi_step` —— logits slice 之前 | 采集 target logits 和 accept 结果 |
+
+完整代码见 **[SKILLS.md — SGLang 插桩指南](SKILLS.md#sglang-插桩指南)**。
+
+> **常见问题**：若看到 `ModuleNotFoundError: No module named 'sglang_profiler'`，将 import 行
+> 改为 `from logits_analyzer import get_cycle_collector`（旧版本使用了已废弃的包名）。
+
+#### 3. 启动推理框架（开启采集）
 
 **SGLang + EAGLE Speculative Decoding**：
 
@@ -69,7 +86,7 @@ python -m vllm.entrypoints.openai.api_server \
     --model /path/to/model
 ```
 
-#### 3. 发送请求并分析
+#### 4. 发送请求并分析
 
 ```bash
 # 发送测试请求

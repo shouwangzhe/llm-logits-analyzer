@@ -33,6 +33,139 @@ cycle_data_YYYYMM/
 
 ---
 
+## SGLang 插桩指南
+
+> **必读**：Logits Analyzer 采用零侵入 hook 机制，但需要用户**一次性**将以下代码块插入 SGLang 的 `eagle_worker.py`。完成后所有采集功能均通过环境变量开关控制，无需再次修改。
+
+### 插桩目标文件
+
+```
+python/sglang/srt/speculative/eagle_worker.py
+```
+
+### 插桩 Block 1：文件顶部 —— 初始化 hook
+
+在文件最前面的 `import logging` 等 stdlib 导入之后、`from sglang...` 导入之前，添加以下代码块：
+
+```python
+# === LOGITS_PROFILER_HOOK START ===
+import os as _os
+_PROFILER_ENABLED = _os.environ.get("SGLANG_LOGITS_PROFILER", "0") != "0"
+if _PROFILER_ENABLED:
+    import sys
+    sys.path.insert(0, '/path/to/sglang')  # 含 logits_analyzer/ 的目录，见注意事项
+    from logits_analyzer import get_cycle_collector
+    _eagle_cycle_collector = get_cycle_collector()
+else:
+    _eagle_cycle_collector = None
+# === LOGITS_PROFILER_HOOK END ===
+```
+
+> **注意事项**：
+> - `sys.path.insert(0, '/path/to/sglang')` 必须指向 `logits_analyzer/` 目录的**父目录**。
+>   例如 `logits_analyzer/` 在 `/sgl-workspace/sglang/logits_analyzer/`，则填 `/sgl-workspace/sglang`。
+> - 如果已通过 `pip install -e .` 安装 `logits_analyzer`，可以省略 `sys.path.insert` 这两行。
+> - 若看到 `ModuleNotFoundError: No module named 'sglang_profiler'`，说明 import 使用了旧包名，
+>   需确保使用 `from logits_analyzer import get_cycle_collector`（不是 `sglang_profiler`）。
+
+### 插桩 Block 2：`EAGLEWorker.__init__` —— 设置 tp_rank 和 tokenizer
+
+在 `EAGLEWorker.__init__` 方法末尾，`super().__init__(...)` 调用完成后，添加以下代码块：
+
+```python
+# Update cycle collector with tp_rank and tokenizer (available after super().__init__)
+if _eagle_cycle_collector is not None:
+    _tokenizer = getattr(self, 'tokenizer', None)
+    _eagle_cycle_collector.tp_rank = tp_rank
+    _eagle_cycle_collector.tokenizer = _tokenizer
+    if tp_rank == 0:
+        print(f"[logits-analyzer] EAGLEWorker init: tp_rank={tp_rank}, "
+              f"tokenizer={type(_tokenizer) if _tokenizer else 'None'}, "
+              f"output_dir={_eagle_cycle_collector.output_dir}")
+```
+
+> **作用**：TP rank > 0 的 worker 会自动跳过数据采集（避免重复写入），只有 rank 0 负责写文件。
+
+### 插桩 Block 3：`forward_target_extend` —— 采集 prefill 第一个 token
+
+在 `forward_target_extend` 方法中，`self.target_worker.forward_batch_generation(...)` 调用之后、`return` 语句之前，添加以下代码块：
+
+```python
+# LOGITS_PROFILER: 采集 prefill 阶段第一个 token
+if (
+    _eagle_cycle_collector is not None
+    and logits_output.next_token_logits is not None
+    and next_token_ids is not None
+):
+    _eagle_cycle_collector.on_prefill_done(
+        next_token_logits=logits_output.next_token_logits.detach().cpu(),
+        next_token_ids=next_token_ids.detach().cpu(),
+        batch_reqs=batch.reqs,
+    )
+```
+
+> **作用**：EAGLE speculation 从第二个 output token 开始介入，第一个 token 由 target model 的
+> prefill forward 生成。此 hook 采集该 token，确保输出重建覆盖全部 token（100% 准确）。
+
+### 插桩 Block 4：`forward_draft_extend_multi_step` —— 采集 draft 数据
+
+在 `forward_draft_extend_multi_step` 方法中，`tree_info_dict` 构建完成后（即 `build_tree_kernel_efficient(...)` 调用之后），添加以下代码块：
+
+```python
+# LOGITS_PROFILER: 收集 draft 数据（cuda graph 模式下 all_step_logits 为空，但仍收集 token/accept 信息）
+if _eagle_cycle_collector is not None and tree_info_dict is not None and not batch.forward_mode.is_idle():
+    key = _eagle_cycle_collector.on_draft_done(tree_info_dict, batch.seq_lens)
+    tree_info_dict['_collector_key'] = key
+```
+
+### 插桩 Block 5：`forward_verify_multi_step` —— 采集 verify 数据
+
+在 `forward_verify_multi_step` 方法中，`organize_draft_results(...)` / `res = ...` 之后、`logits_output.next_token_logits` 被 slice（`= logits_output.next_token_logits[res.accepted_indices]`）之前，添加以下代码块：
+
+```python
+# LOGITS_PROFILER: 收集 verify 数据（在 logits 被 slice 之前）
+if (
+    _eagle_cycle_collector is not None
+    and spec_info.tree_info is not None
+    and spec_info.tree_info.get('_collector_key') is not None
+    and logits_output.next_token_logits is not None
+):
+    _eagle_cycle_collector.on_verify_done(
+        tree_info_key=spec_info.tree_info['_collector_key'],
+        target_logits=logits_output.next_token_logits.detach().cpu(),
+        draft_tokens=spec_info.draft_token,
+        accept_length_per_req=res.accept_length_per_req_cpu,
+        accepted_indices=res.accepted_indices,
+        num_draft_tokens=self.server_args.speculative_num_draft_tokens,
+        batch_reqs=batch.reqs,
+        verified_id=res.verified_id,
+    )
+```
+
+> **关键**：必须在 `logits_output.next_token_logits = logits_output.next_token_logits[res.accepted_indices]`
+> 之前插入，否则 logits 已被截断，无法拿到完整的 target logits。
+
+### 插桩验证
+
+插桩完成后，启动 server 时日志中应出现：
+
+```
+[logits-analyzer] Initialized, output_dir=./cycle_data_YYYYMM
+[logits-analyzer] EAGLEWorker init: tp_rank=0, tokenizer=<class 'xxx'>, output_dir=./cycle_data_YYYYMM
+```
+
+### 常见问题
+
+| 错误 | 原因 | 解决方案 |
+|------|------|---------|
+| `ModuleNotFoundError: No module named 'sglang_profiler'` | Block 1 中使用了旧包名 | 改为 `from logits_analyzer import get_cycle_collector` |
+| `ModuleNotFoundError: No module named 'logits_analyzer'` | `sys.path` 路径不对，或未安装 | 检查路径是否为 `logits_analyzer/` 的父目录，或执行 `pip install -e .` |
+| 没有生成任何 `cycle_*` 文件 | Block 4/5 未插桩，或 `_eagle_cycle_collector` 为 `None` | 检查 Block 1 和 `SGLANG_LOGITS_PROFILER=1` 是否生效 |
+| 没有 `prefill_*` 文件 | Block 3 未插桩 | 添加 Block 3 到 `forward_target_extend` |
+| prefill prob 极低（如 8e-06） | 正常现象 —— thinking 模型的首个 token（`**`）在 raw logits 中概率低 | 无需处理，token_id 正确，重建不受影响 |
+
+---
+
 ## 采集层
 
 ### 第一步：启动服务器（开启采集）
