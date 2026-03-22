@@ -606,3 +606,129 @@ python -m logits_analyzer.skills.logits_inspect --data-dir $DATA_DIR --cycle-id 
 python -m logits_analyzer.skills.complete_analysis --data-dir $DATA_DIR --request-id $REQ_ID \
     --tokenizer /path/to/model --output $DATA_DIR/complete_analysis.md
 ```
+
+---
+
+## Temperature 采样差异化分析
+
+### 分析目的
+
+通过对相同 prompt 发送两次（temperature > 0），观察两次输出的分歧点，从 logits 层面理解采样随机性的本质和 thinking model 的双层随机性。
+
+### 完整分析流程
+
+**Step 1：采集两次请求**
+
+```bash
+# 方法一：使用 collect_requests（推荐，自动保存 input/output）
+python -m logits_analyzer.collect_requests \
+    --data-dir $DATA_DIR \
+    --prompt "你好" \
+    --max-tokens 300
+
+# 发两次，得到两个 request_id
+```
+
+**Step 2：找分歧点**
+
+```python
+import json, sys
+sys.path.insert(0, '/path/to/sglang')
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained('/path/to/tokenizer', trust_remote_code=True)
+
+# 加载两次请求数据
+with open(f'{data_dir}/requests.jsonl') as f:
+    reqs = [json.loads(l) for l in f if '你好' in json.loads(l)['input']]
+
+r1, r2 = reqs[-2], reqs[-1]
+rea1, rea2 = r1['reasoning_content'], r2['reasoning_content']
+out1, out2 = r1['output'], r2['output']
+
+# 字符级分歧
+rea_cd = next((i for i in range(min(len(rea1),len(rea2))) if rea1[i]!=rea2[i]), -1)
+out_cd = next((i for i in range(min(len(out1),len(out2))) if out1[i]!=out2[i]), -1)
+print(f"Reasoning diverge at char: {rea_cd}")
+print(f"Output    diverge at char: {out_cd}")
+
+# token 级分歧（reasoning 阶段）
+rea_toks1 = tokenizer.encode(rea1, add_special_tokens=False)
+rea_toks2 = tokenizer.encode(rea2, add_special_tokens=False)
+rea_td = next((i for i in range(min(len(rea_toks1),len(rea_toks2))) if rea_toks1[i]!=rea_toks2[i]), -1)
+print(f"Reasoning token diverge: {rea_td} → '{tokenizer.decode([rea_toks1[rea_td]])}' vs '{tokenizer.decode([rea_toks2[rea_td]])}'")
+```
+
+**Step 3：加载分歧点的 cycle 和 logits**
+
+```python
+import glob
+from logits_analyzer.lib.cycle_data import CycleData
+
+cd = CycleData(data_dir)
+
+cycles1, cycles2 = [], []
+for f in sorted(glob.glob(f'{data_dir}/cycle_*_text.json')):
+    c = json.load(open(f))
+    if c['request_id'] == r1['request_id']: cycles1.append(c)
+    elif c['request_id'] == r2['request_id']: cycles2.append(c)
+
+# 重建 token 序列
+def get_tokens(cycles):
+    tokens = []
+    for c in cycles:
+        for t in c.get('actual_output_tokens', []):
+            tokens.append(t['token_id'] if isinstance(t, dict) else t)
+    return tokens
+
+tokens1, tokens2 = get_tokens(cycles1), get_tokens(cycles2)
+
+# output 阶段起始位置
+out_start1 = len(tokenizer.encode(rea1, add_special_tokens=False))
+out_start2 = len(tokenizer.encode(rea2, add_special_tokens=False))
+out_toks1 = tokens1[out_start1:]
+out_toks2 = tokens2[out_start2:]
+
+# output token 分歧
+out_td = next((i for i in range(min(len(out_toks1),len(out_toks2))) if out_toks1[i]!=out_toks2[i]), -1)
+print(f"Output token diverge: {out_td} → '{tokenizer.decode([out_toks1[out_td]])}' vs '{tokenizer.decode([out_toks2[out_td]])}'")
+
+# 找对应的 cycle 和 logits
+def find_target_info(cycles, global_pos):
+    pos = 0
+    for cycle in cycles:
+        ctoks = cycle.get('actual_output_tokens', [])
+        if pos <= global_pos < pos + len(ctoks):
+            lp = global_pos - pos
+            if lp < len(cycle['target']):
+                return cycle, lp, cycle['target'][lp]
+        pos += len(ctoks)
+    return None, None, None
+
+cycle, lp, target = find_target_info(cycles1, out_start1 + out_td)
+print(f"\nAt divergence — Cycle {cycle['cycle_id']} pos {lp}:")
+print(f"Selected: '{target['token_text']}' (prob={target['top1_prob']:.4f})")
+print("Top-k:")
+for k, t in enumerate(target['topk'][:6]):
+    mark = ' ←' if t['token_id'] == target['token_id'] else ''
+    print(f"  {k+1}. '{t['token_text']}' prob={t['prob']:.4f}{mark}")
+```
+
+### 两种分歧模式
+
+| 模式 | 触发条件 | Logits 特征 | 案例 |
+|------|---------|------------|------|
+| **Reasoning 阶段分歧** | reasoning 早期遇到高熵位置 | 分歧点两次 logits **完全相同** | [案例一](docs/reports/20260322_glm5_temperature_sampling.md) |
+| **Output 阶段分歧** | reasoning 路径不同但收敛，output 遇到高熵位置 | 分歧点两次 logits **不同** | [案例二](docs/reports/20260322_glm5_output_divergence.md) |
+
+**判断依据**：
+- 若 `rea_td < out_td`（reasoning 先分歧）：检查 output 分歧点两次 logits 是否相同
+  - 相同 → reasoning 分歧但 output 尚未受影响，纯随机种子导致 output 分叉
+  - 不同 → reasoning 不同路径的 KV cache 差异已传播到 output，属于 output 阶段分歧
+- 若 `rea_td > out_td`（output 先分歧）：说明 reasoning 相同但 output 率先产生随机分叉
+
+### 注意事项
+
+- `collect_requests` 的默认 HTTP 超时可能不足以处理 GLM-5 思考模型（reasoning 较长）；若超时，可直接通过 `urllib.request.urlopen(timeout=...)` 延长超时时间并手动写入 requests.jsonl
+- reasoning token 数量通过 `tokenizer.encode(reasoning_content)` 估算，与实际 token 流存在少量误差（special tokens 等）；分析时以实际 cycle 数据为准
+- temperature=0.8 时，每个请求约 40-60s 完成（GLM-5 + `你好` prompt）

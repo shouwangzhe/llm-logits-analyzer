@@ -9,6 +9,7 @@
 | [20260322_glm5_simple_math.md](20260322_glm5_simple_math.md) | 2026-03-22 | `1+1等于几？` | 简单数学问题（50 cycles，accept rate 58.7%） |
 | [20260322_glm5_geography.md](20260322_glm5_geography.md) | 2026-03-22 | `北京是哪个国家的首都？` | 地理知识问答（51 cycles，accept rate 60.8%） |
 | [20260322_glm5_fruits.md](20260322_glm5_fruits.md) | 2026-03-22 | `列举3种常见的水果` | 列举类问题（52 cycles，accept rate 57.7%） |
-| [20260322_glm5_temperature_sampling.md](20260322_glm5_temperature_sampling.md) | 2026-03-22 | `你好`（×2，temperature=0.8） | **差异化分析**：相同 prompt 两次采样，定位分歧 token，对比 logits 分布 |
+| [20260322_glm5_temperature_sampling.md](20260322_glm5_temperature_sampling.md) | 2026-03-22 | `你好`（×2，T=0.8） | **分析一**：分歧发生在 reasoning 阶段（token 44），logits 完全相同，纯随机数种子导致分叉 |
+| [20260322_glm5_output_divergence.md](20260322_glm5_output_divergence.md) | 2026-03-22 | `你好`（×2，T=0.8） | **分析二**：reasoning 先分歧（token 27），但 output 共同前缀长达 58 字符才分歧，logits 不同 |
 
 所有报告均由 `logits_analyzer.skills.complete_analysis` 生成，使用 GLM-5 + EAGLE speculative decoding。
