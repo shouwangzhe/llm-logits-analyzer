@@ -31,7 +31,7 @@ Logits Analyzer 是一个通用的 LLM 推理过程 logits 分析工具，帮助
 - **Speculative Decoding 专项分析**：EAGLE、Medusa 等算法的 draft/target logits 对比
 - **100% 输出重建**：基于 `verified_id` 的精确重建，验证数据完整性
 - **丰富的分析工具**：5 个内置 skill（统计、重建、draft 质量、logits 检查、完整报告）
-- **完整测试覆盖**：69 个测试用例（53 单元 + 16 集成），确保数据可靠性
+- **完整测试覆盖**：84 个测试用例（68 单元 + 16 集成），确保数据可靠性
 - **开箱即用**：支持 GLM-5、Qwen、LLaMA 等主流开源模型
 
 ### 快速开始
@@ -156,7 +156,7 @@ python -m logits_analyzer.skills.logits_inspect \
 
 项目包含完整的测试套件（69 个测试用例），覆盖：
 
-- **单元测试**（53 个）：CycleCollector、CycleData、各 skill 的核心逻辑
+- **单元测试**（68 个）：CycleCollector（含 prefill 采集）、CycleData、各 skill 的核心逻辑
 - **集成测试**（16 个）：端到端流程、100% 重建验证、完整报告生成
 
 运行测试：
@@ -230,7 +230,7 @@ pytest logits_analyzer/tests/ \
 - **Zero-intrusion Collection**: Enable via environment variable without modifying model code
 - **100% Output Reconstruction**: Precise reconstruction based on `verified_id`, validating data integrity
 - **Rich Analysis Tools**: 5 built-in skills (stats, reconstruct, draft quality, logits inspect, complete analysis)
-- **Full Test Coverage**: 69 test cases (53 unit + 16 integration), ensuring data reliability
+- **Full Test Coverage**: 84 test cases (68 unit + 16 integration), ensuring data reliability
 - **Out-of-the-box**: Supports mainstream open-source models like GLM-5, Qwen, LLaMA
 
 ### Quick Start
@@ -338,7 +338,7 @@ Traditional methods use `argmax(target_logits)` as bonus token, causing reconstr
 
 The project includes a complete test suite (69 test cases) covering:
 
-- **Unit Tests** (53): CycleCollector, CycleData, core logic of each skill
+- **Unit Tests** (68): CycleCollector (including prefill collection), CycleData, core logic of each skill
 - **Integration Tests** (16): End-to-end flow, 100% reconstruction validation, complete report generation
 
 Run tests:

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-03-22
+
+### Added
+
+- **Prefill Token Collection**: `CycleCollector.on_prefill_done()` now captures the first token generated during the prefill phase
+  - Saves `prefill_<request_id>_text.json` (token id, prob, top-k) and `prefill_<request_id>_logits.npz`
+  - Hook injected in `eagle_worker.py::forward_target_extend` after target model forward pass
+- **`CycleData.load_prefill()`**: Load prefill token data for a given request
+- **`CycleData.load_prefill_logits()`**: Load prefill logits npz
+- **`CycleData.list_requests()`**: Now also scans prefill files, so requests with only prefill data are included
+- **`reconstruct` skill**: Automatically uses prefill data (no longer relies on `requests.jsonl` + tokenizer to recover the first token)
+- **15 new unit tests** covering prefill collection, prefill data loading, and reconstruction with prefill token
+
+### Changed
+
+- `make_mock_dataset()` in test conftest now writes a `prefill_<rid>_text.json` by default (`with_prefill=True`)
+- Total unit tests: 53 → 68
+
+### Fixed
+
+- Output reconstruction now accounts for prefill token directly from profiler data, eliminating the last gap in 100% reconstruction accuracy
+
+---
+
 ## [0.1.0] - 2026-03-22
 
 ### Added

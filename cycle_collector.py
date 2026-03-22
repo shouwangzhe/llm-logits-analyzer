@@ -1,11 +1,11 @@
 """
-CycleCollector - 按 cycle 粒度采集 EAGLE draft + target logits
+CycleCollector - 按 cycle 粒度采集 EAGLE draft + target logits，以及 prefill 阶段第一个 token
 
-每个 cycle = 一次 draft_forward + verify 的完整轮次
-输出格式：
-  output_dir/
-    cycle_{n:06d}_text.json    # 明文分析数据（draft top-k + target top-k + accept/reject）
-    cycle_{n:06d}_logits.npz   # 原始 logits（draft_logits + target_logits）
+完整数据包含：
+  1. prefill_<request_id>_text.json   - prefill 阶段第一个 token 的明文数据
+  2. prefill_<request_id>_logits.npz  - prefill 阶段 target logits（原始）
+  3. cycle_{n:06d}_text.json          - 每个 EAGLE cycle 的明文分析数据
+  4. cycle_{n:06d}_logits.npz         - 每个 EAGLE cycle 的原始 logits
 
 使用限制：
   - 当前仅支持 batch 中第一个 request（用于单请求调试分析）
@@ -46,6 +46,30 @@ class CycleCollector:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def on_prefill_done(
+        self,
+        next_token_logits: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        batch_reqs=None,
+    ):
+        """
+        在 forward_target_extend 完成后调用，采集 prefill 阶段产生的第一个 token。
+
+        Args:
+            next_token_logits: target model 的 logits，shape [batch, vocab_size]
+                               每行对应一个 request 的 prefill 输出 logits
+            next_token_ids: 实际采样的 token ids，shape [batch]
+            batch_reqs: 可选，用于获取 request id
+        """
+        if self.tp_rank != 0:
+            return
+        try:
+            self._save_prefill(next_token_logits, next_token_ids, batch_reqs)
+        except Exception as e:
+            import traceback
+            print(f"[CycleCollector] Error saving prefill: {e}")
+            traceback.print_exc()
 
     def on_draft_done(self, tree_info_dict: dict, batch_seq_lens):
         """
@@ -145,6 +169,47 @@ class CycleCollector:
                 "prob": round(float(v), 6),
             })
         return result
+
+    def _save_prefill(
+        self,
+        next_token_logits: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        batch_reqs=None,
+    ):
+        """为 batch 中每个 request 保存 prefill 阶段第一个 token 的数据"""
+        num_reqs = next_token_logits.shape[0]
+        token_ids_cpu = next_token_ids.cpu().tolist() if torch.is_tensor(next_token_ids) else list(next_token_ids)
+        logits_cpu = next_token_logits.float().cpu()
+
+        for r in range(num_reqs):
+            req_obj = batch_reqs[r] if batch_reqs and r < len(batch_reqs) else None
+            req_id = req_obj.rid if req_obj else f"req_{r}"
+            token_id = int(token_ids_cpu[r])
+            logits_1d = logits_cpu[r]
+
+            probs = torch.softmax(logits_1d, dim=-1)
+            token_prob = round(float(probs[token_id].item()), 6)
+            topk_info = self._topk_info(logits_1d)
+
+            text_data = {
+                "type": "prefill",
+                "request_id": req_id,
+                "token_id": token_id,
+                "token_text": self._decode(token_id),
+                "prob": token_prob,
+                "topk": topk_info,
+            }
+
+            safe_rid = req_id.replace("/", "_")[:32]
+            text_path = self.output_dir / f"prefill_{safe_rid}_text.json"
+            with open(text_path, "w", encoding="utf-8") as f:
+                json.dump(text_data, f, ensure_ascii=False, indent=2)
+
+            if self.save_full_logits:
+                npz_path = self.output_dir / f"prefill_{safe_rid}_logits.npz"
+                np.savez_compressed(str(npz_path), target_logits=logits_1d.numpy())
+
+            print(f"[CycleCollector] prefill req={req_id} token={self._decode(token_id)!r} prob={token_prob}")
 
     def _save_cycle(
         self,

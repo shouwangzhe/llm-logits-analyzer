@@ -21,11 +21,15 @@ logits_analyzer/
 
 ```
 cycle_data_YYYYMM/
-├── requests.jsonl                  # collect_requests 写入的请求记录
-├── cycle_000163_text.json          # 每个 EAGLE cycle 的文本分析数据
-├── cycle_000163_logits.npz         # 原始 logits（draft + target）
+├── requests.jsonl                       # collect_requests 写入的请求记录
+├── prefill_<request_id>_text.json       # prefill 阶段第一个 token（token_id + logits top-k）
+├── prefill_<request_id>_logits.npz      # prefill 阶段完整 logits（可选）
+├── cycle_000163_text.json               # 每个 EAGLE cycle 的文本分析数据
+├── cycle_000163_logits.npz              # 原始 logits（draft + target）
 └── ...
 ```
+
+**完整数据覆盖**：prefill token + EAGLE cycles = 全部输出 token，重建准确率达 100%。
 
 ---
 

@@ -21,10 +21,12 @@
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              EAGLE Worker                            │   │
 │  │  ┌────────────────────────────────────────────────┐  │   │
+│  │  │  Prefill (target extend)                       │  │   │
+│  │  │         ↓                                      │  │   │
+│  │  │    on_prefill_done()  ← 第一个 token           │  │   │
+│  │  │                                                │  │   │
 │  │  │  Draft Forward  →  Target Verify  →  Accept   │  │   │
 │  │  │         ↓                ↓              ↓      │  │   │
-│  │  │    [CycleCollector Hook]                       │  │   │
-│  │  │         ↓                                       │  │   │
 │  │  │    on_draft_done()   on_verify_done()          │  │   │
 │  │  └────────────────────────────────────────────────┘  │   │
 │  └──────────────────────────────────────────────────────┘   │
@@ -35,6 +37,8 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                   File System                               │
 │  cycle_data_YYYYMM/                                         │
+│  ├── prefill_<rid>_text.json  ← Prefill 第一个 token       │
+│  ├── prefill_<rid>_logits.npz ← Prefill logits (可选)      │
 │  ├── cycle_000000_text.json   ← JSON (token info)          │
 │  ├── cycle_000000_logits.npz  ← NumPy (raw logits)         │
 │  ├── cycle_000001_text.json                                │

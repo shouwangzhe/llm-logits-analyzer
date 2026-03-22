@@ -1,8 +1,9 @@
 """
 reconstruct.py — 验证 cycle 数据能否正确还原模型输出
 
-从 cycle 文件的 actual_output_tokens 中提取 token ids，
-拼接后与 requests.jsonl 中的 output/reasoning_content 比对，
+从 prefill 数据（prefill_<rid>_text.json）获取第一个 token，
+再从各 cycle 的 actual_output_tokens 拼接所有 token ids，
+解码后与 requests.jsonl 中的 output/reasoning_content 比对，
 验证还原精度。
 
 用法:
@@ -26,10 +27,8 @@ def reconstruct(cycles: list, tokenizer=None, pre_eagle_ids: list = None) -> str
     """
     从 cycles 还原完整输出文本。
 
-    EAGLE speculation 从第二个 output token 开始介入，第一个 token 由普通
-    decode 生成，不记录在任何 cycle 中（pre-EAGLE token）。
-    如果提供 pre_eagle_ids，会将其 prepend 到所有 cycle token ids 之前，
-    以还原完整输出。
+    优先使用 pre_eagle_ids（来自 prefill 数据或 requests.jsonl 反推）prepend
+    到所有 cycle token ids 之前，以还原完整输出。
 
     优先使用 tokenizer 对所有 token ids 批量解码（精确）；
     fallback 使用每个 cycle 的 actual_output_text_batch 拼接。
@@ -66,6 +65,9 @@ def main():
         print(f"No cycles found for request_id prefix: {args.request_id}")
         sys.exit(1)
 
+    # 找出完整的 request_id
+    full_request_id = cycles[0].get("request_id", args.request_id)
+
     print(f"Loaded {len(cycles)} cycles for request {args.request_id[:16]}...")
 
     # 加载 tokenizer（可选）
@@ -78,36 +80,48 @@ def main():
         except Exception as e:
             print(f"[warn] Failed to load tokenizer: {e}")
 
-    # 从 requests.jsonl 加载实际输出
-    req = cd.load_request(args.request_id)
+    # 优先从 prefill 数据获取第一个 token
+    pre_eagle_ids = []
+    prefill_data = cd.load_prefill(full_request_id)
+    if prefill_data is not None:
+        prefill_token_id = prefill_data.get("token_id")
+        if prefill_token_id is not None:
+            pre_eagle_ids = [prefill_token_id]
+            token_text = prefill_data.get("token_text", f"tok_{prefill_token_id}")
+            print(f"  prefill token (from profiler): id={prefill_token_id} text={token_text!r}")
+    else:
+        # fallback: 从 requests.jsonl 反推 pre-EAGLE tokens
+        req = cd.load_request(full_request_id)
+        if req is None:
+            all_reqs = cd.load_requests()
+            matches = [v for k, v in all_reqs.items() if k.startswith(args.request_id)]
+            req = matches[0] if matches else None
+
+        cycle_token_count = sum(len(c.get("actual_output_tokens", [])) for c in cycles)
+        if req is not None:
+            usage = req.get("usage") or {}
+            completion_tokens = usage.get("completion_tokens", 0)
+            pre_eagle_count = completion_tokens - cycle_token_count
+            if pre_eagle_count > 0 and tokenizer is not None:
+                actual_reasoning = req.get("reasoning_content", "") or ""
+                actual_output = req.get("output", "") or ""
+                actual_full = actual_reasoning + actual_output
+                encoded = tokenizer.encode(actual_full, add_special_tokens=False)
+                pre_eagle_ids = encoded[:pre_eagle_count]
+                print(f"  pre-EAGLE tokens (fallback from requests.jsonl): {pre_eagle_count}  ids={pre_eagle_ids}")
+            elif pre_eagle_count > 0:
+                print(f"  [warn] {pre_eagle_count} pre-EAGLE token(s) missing (no prefill data, no tokenizer)")
+            elif pre_eagle_count < 0:
+                print(f"  [warn] cycle tokens ({cycle_token_count}) > completion_tokens ({completion_tokens}), unexpected")
+
+    reconstructed = reconstruct(cycles, tokenizer, pre_eagle_ids)
+
+    # 从 requests.jsonl 加载实际输出用于比对
+    req = cd.load_request(full_request_id)
     if req is None:
         all_reqs = cd.load_requests()
         matches = [v for k, v in all_reqs.items() if k.startswith(args.request_id)]
         req = matches[0] if matches else None
-
-    # 计算 pre-EAGLE token 数量
-    # completion_tokens（来自 API usage）= pre-EAGLE tokens + cycle tokens
-    pre_eagle_ids = []
-    cycle_token_count = sum(len(c.get("actual_output_tokens", [])) for c in cycles)
-    if req is not None:
-        usage = req.get("usage") or {}
-        completion_tokens = usage.get("completion_tokens", 0)
-        pre_eagle_count = completion_tokens - cycle_token_count
-        if pre_eagle_count > 0 and tokenizer is not None:
-            # 从 actual_full 的开头 encode 出 pre-EAGLE token ids
-            actual_reasoning = req.get("reasoning_content", "") or ""
-            actual_output = req.get("output", "") or ""
-            actual_full = actual_reasoning + actual_output
-            # encode 完整输出，取前 pre_eagle_count 个 token
-            encoded = tokenizer.encode(actual_full, add_special_tokens=False)
-            pre_eagle_ids = encoded[:pre_eagle_count]
-            print(f"  pre-EAGLE tokens: {pre_eagle_count}  ids={pre_eagle_ids}")
-        elif pre_eagle_count > 0:
-            print(f"  [warn] {pre_eagle_count} pre-EAGLE token(s) missing but no tokenizer to recover them")
-        elif pre_eagle_count < 0:
-            print(f"  [warn] cycle tokens ({cycle_token_count}) > completion_tokens ({completion_tokens}), unexpected")
-
-    reconstructed = reconstruct(cycles, tokenizer, pre_eagle_ids)
 
     if req is None:
         print("\n[warn] requests.jsonl 中未找到该 request，仅显示重建结果。")
@@ -121,14 +135,10 @@ def main():
 
     # 比较
     recon_stripped = reconstructed
-    # 去掉末尾 EOS token（如 <|user|>）
     for eos in ["<|user|>", "<|endoftext|>", "</s>", "<eos>"]:
         if recon_stripped.endswith(eos):
             recon_stripped = recon_stripped[:-len(eos)]
 
-    # API 返回的 output 不含 </think> 分隔符，但 token 序列中有；
-    # actual_full = reasoning + output，重建序列 = reasoning + </think> + output
-    # 需要去掉 </think> 后再比对
     THINK_END = "</think>"
     if THINK_END in recon_stripped and actual_reasoning and actual_output:
         recon_stripped = recon_stripped.replace(THINK_END, "", 1)
@@ -145,7 +155,6 @@ def main():
     print(f"  Output match   : {'✅ YES' if output_match else '❌ NO'}")
 
     if not match and args.show_diff:
-        # 找出第一个不匹配位置
         for i, (a, b) in enumerate(zip(recon_stripped, actual_full)):
             if a != b:
                 lo, hi = max(0, i - 30), min(len(actual_full), i + 50)
@@ -154,11 +163,9 @@ def main():
                 print(f"    reconstructed: ...{repr(recon_stripped[lo:hi])}...")
                 break
 
-    # token 统计
-    total_tokens = sum(
-        len(c.get("actual_output_tokens", [])) for c in cycles
-    )
-    print(f"\n  Cycle tokens: {total_tokens}  pre-EAGLE tokens: {len(pre_eagle_ids)}  total: {total_tokens + len(pre_eagle_ids)}")
+    total_tokens = sum(len(c.get("actual_output_tokens", [])) for c in cycles)
+    prefill_source = "profiler" if prefill_data else "fallback"
+    print(f"\n  Cycle tokens: {total_tokens}  pre-EAGLE tokens: {len(pre_eagle_ids)} (source={prefill_source})  total: {total_tokens + len(pre_eagle_ids)}")
 
 
 if __name__ == "__main__":

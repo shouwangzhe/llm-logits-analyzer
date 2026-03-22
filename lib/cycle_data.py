@@ -3,18 +3,21 @@ CycleData — 加载和查询 cycle_data 目录的通用库
 
 数据目录格式:
   cycle_data_YYYYMM/
-    requests.jsonl              # 每条请求的 input/output（由 collect_requests 写入）
-    cycle_{n:06d}_text.json    # 每个 EAGLE cycle 的文本分析数据
-    cycle_{n:06d}_logits.npz   # 每个 EAGLE cycle 的原始 logits（可选）
+    requests.jsonl                   # 每条请求的 input/output（由 collect_requests 写入）
+    prefill_<rid>_text.json          # prefill 阶段第一个 token 数据
+    prefill_<rid>_logits.npz         # prefill 阶段 target logits（可选）
+    cycle_{n:06d}_text.json          # 每个 EAGLE cycle 的文本分析数据
+    cycle_{n:06d}_logits.npz         # 每个 EAGLE cycle 的原始 logits（可选）
 
 用法:
     from logits_analyzer.lib.cycle_data import CycleData
 
     cd = CycleData("/path/to/cycle_data_202603181445")
-    print(cd.list_requests())       # 所有 request_id
+    print(cd.list_requests())          # 所有 request_id
     cycles = cd.load_cycles("007b2f4e...")  # 指定 request 的所有 cycle
-    logits = cd.load_logits(163)    # 加载 cycle 163 的 npz 数据
-    req = cd.load_request("007b2f4e...")    # requests.jsonl 中的记录
+    prefill = cd.load_prefill("007b2f4e...")  # prefill 数据
+    logits = cd.load_logits(163)       # 加载 cycle 163 的 npz 数据
+    req = cd.load_request("007b2f4e...")     # requests.jsonl 中的记录
 """
 
 import json
@@ -72,16 +75,25 @@ class CycleData:
     # ------------------------------------------------------------------
 
     def list_requests(self) -> List[str]:
-        """返回 cycle 文件中出现的所有 request_id（去重，按首次出现顺序）"""
+        """返回数据目录中出现的所有 request_id（cycle + prefill 文件，去重，按首次出现顺序）"""
         seen = []
         seen_set = set()
-        for path in self._get_text_files():
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            rid = data.get("request_id", "")
+
+        def _add(rid):
             if rid and rid not in seen_set:
                 seen.append(rid)
                 seen_set.add(rid)
+
+        for path in self._get_text_files():
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            _add(data.get("request_id", ""))
+
+        for path in sorted(self.data_dir.glob("prefill_*_text.json")):
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            _add(data.get("request_id", ""))
+
         return seen
 
     def load_cycles(self, request_id: str) -> List[dict]:
@@ -110,6 +122,27 @@ class CycleData:
         except ImportError:
             raise ImportError("numpy is required to load logits")
         path = self.data_dir / f"cycle_{cycle_id:06d}_logits.npz"
+        if not path.exists():
+            return None
+        return np.load(str(path))
+
+    def load_prefill(self, request_id: str) -> Optional[dict]:
+        """加载指定 request 的 prefill 数据（prefill_<rid>_text.json）"""
+        safe_rid = request_id.replace("/", "_")[:32]
+        path = self.data_dir / f"prefill_{safe_rid}_text.json"
+        if not path.exists():
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def load_prefill_logits(self, request_id: str):
+        """加载指定 request 的 prefill logits npz（返回 numpy archive 或 None）"""
+        try:
+            import numpy as np
+        except ImportError:
+            raise ImportError("numpy is required to load logits")
+        safe_rid = request_id.replace("/", "_")[:32]
+        path = self.data_dir / f"prefill_{safe_rid}_logits.npz"
         if not path.exists():
             return None
         return np.load(str(path))

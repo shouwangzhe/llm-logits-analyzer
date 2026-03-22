@@ -198,3 +198,44 @@ class TestReconstruct:
         ]
         result = reconstruct(cycles, tokenizer=None)
         assert result == "ABC"
+
+
+class TestReconstructWithPrefill:
+    """验证 reconstruct 正确使用 prefill token"""
+
+    def test_prefill_token_prepended(self):
+        """pre_eagle_ids=[42] + cycle tokens 拼接后，tokenizer 解码时包含 42"""
+        class MockTokenizer:
+            def decode(self, ids, skip_special_tokens=False):
+                return ",".join(str(i) for i in ids)
+
+        cycles = [
+            {"actual_output_tokens": [{"token_id": 1}, {"token_id": 2}],
+             "actual_output_text_batch": "12"},
+        ]
+        result = reconstruct(cycles, tokenizer=MockTokenizer(), pre_eagle_ids=[42])
+        assert result.startswith("42"), f"Expected to start with '42', got {result!r}"
+        assert "1" in result and "2" in result
+
+    def test_load_prefill_used_in_reconstruction(self, tmp_data_dir):
+        """从 CycleData.load_prefill() 取 token_id，prepend 后 ids 顺序正确"""
+        from logits_analyzer.lib.cycle_data import CycleData
+
+        rid = "prefilltest001"
+        make_mock_dataset(tmp_data_dir, request_id=rid, n_cycles=3, with_prefill=True)
+        cd = CycleData(str(tmp_data_dir))
+
+        prefill = cd.load_prefill(rid)
+        assert prefill is not None
+        prefill_id = prefill["token_id"]  # == 42
+
+        cycles = cd.load_cycles(rid)
+        all_ids = [prefill_id] + [
+            t["token_id"]
+            for c in cycles
+            for t in c.get("actual_output_tokens", [])
+        ]
+        # prefill token 在最前面
+        assert all_ids[0] == prefill_id
+        assert len(all_ids) > 1
+

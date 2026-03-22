@@ -172,10 +172,33 @@ def make_mock_cycle(
     }
 
 
-def make_mock_dataset(data_dir: Path, request_id: str = "aabbccdd1234", n_cycles: int = 10):
-    """在 data_dir 中写入 n_cycles 个 mock cycle 文件和 requests.jsonl"""
+def make_mock_prefill(request_id: str, token_id: int = 42) -> dict:
+    """构造一个合法的 prefill_<rid>_text.json 数据结构"""
+    return {
+        "type": "prefill",
+        "request_id": request_id,
+        "token_id": token_id,
+        "token_text": f"tok_{token_id}",
+        "prob": 0.95,
+        "topk": [{"token_id": token_id, "token_text": f"tok_{token_id}", "prob": 0.95}],
+    }
+
+
+def make_mock_dataset(data_dir: Path, request_id: str = "aabbccdd1234", n_cycles: int = 10, with_prefill: bool = True):
+    """在 data_dir 中写入 n_cycles 个 mock cycle 文件、prefill 文件和 requests.jsonl"""
     data_dir.mkdir(parents=True, exist_ok=True)
     all_token_ids = []
+
+    # prefill token
+    prefill_token_id = 42
+    if with_prefill:
+        prefill = make_mock_prefill(request_id, token_id=prefill_token_id)
+        safe_rid = request_id[:32]
+        path = data_dir / f"prefill_{safe_rid}_text.json"
+        with open(path, "w") as f:
+            json.dump(prefill, f)
+        all_token_ids.append(prefill_token_id)
+
     for i in range(n_cycles):
         accept = i % 4  # 0,1,2,3,0,1,2,3,...
         verified_ids = list(range(200 + i * 10, 200 + i * 10 + accept + 1))

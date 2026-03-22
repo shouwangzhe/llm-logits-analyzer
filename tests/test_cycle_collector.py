@@ -2,6 +2,7 @@
 test_cycle_collector.py — 单元测试：CycleCollector 采集逻辑
 
 使用 mock torch tensors 验证 CycleCollector 的采集行为：
+- on_prefill_done：prefill 第一个 token 采集
 - on_draft_done / on_verify_done 的完整流程
 - verified_id bonus token 正确性（核心修复点）
 - actual_output_tokens / actual_output_text_batch 字段
@@ -253,3 +254,69 @@ class TestTopkInfo:
         for t in data["target"]:
             total = sum(x["prob"] for x in t["topk"])
             assert total <= 1.0 + 1e-4
+
+
+class TestPrefillCollection:
+    """on_prefill_done：验证 prefill 第一个 token 的采集行为"""
+
+    def _run_prefill(self, collector, token_id=77, batch_size=1):
+        logits = torch.randn(batch_size, VOCAB_SIZE)
+        # 确保 token_id 是 argmax（概率最高）
+        logits[0, token_id] = 100.0
+        token_ids = torch.tensor([token_id] * batch_size)
+        collector.on_prefill_done(
+            next_token_logits=logits,
+            next_token_ids=token_ids,
+            batch_reqs=None,
+        )
+
+    def test_prefill_creates_text_file(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=5, save_full_logits=False)
+        self._run_prefill(cc, token_id=77)
+        prefill_files = list(tmp_data_dir.glob("prefill_*_text.json"))
+        assert len(prefill_files) == 1
+
+    def test_prefill_text_required_fields(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=5, save_full_logits=False)
+        self._run_prefill(cc, token_id=77)
+        data = json.load(open(list(tmp_data_dir.glob("prefill_*_text.json"))[0]))
+        for field in ["type", "request_id", "token_id", "token_text", "prob", "topk"]:
+            assert field in data, f"Missing field: {field}"
+
+    def test_prefill_type_field(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=5, save_full_logits=False)
+        self._run_prefill(cc)
+        data = json.load(open(list(tmp_data_dir.glob("prefill_*_text.json"))[0]))
+        assert data["type"] == "prefill"
+
+    def test_prefill_token_id_correct(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=5, save_full_logits=False)
+        self._run_prefill(cc, token_id=123)
+        data = json.load(open(list(tmp_data_dir.glob("prefill_*_text.json"))[0]))
+        assert data["token_id"] == 123
+
+    def test_prefill_topk_count(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=10, save_full_logits=False)
+        self._run_prefill(cc)
+        data = json.load(open(list(tmp_data_dir.glob("prefill_*_text.json"))[0]))
+        assert len(data["topk"]) <= 10
+
+    def test_prefill_creates_npz_when_enabled(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=5, save_full_logits=True)
+        self._run_prefill(cc)
+        npz_files = list(tmp_data_dir.glob("prefill_*_logits.npz"))
+        assert len(npz_files) == 1
+
+    def test_prefill_no_npz_when_disabled(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=5, save_full_logits=False)
+        self._run_prefill(cc)
+        npz_files = list(tmp_data_dir.glob("prefill_*_logits.npz"))
+        assert len(npz_files) == 0
+
+    def test_prefill_skipped_on_nonzero_tp_rank(self, tmp_data_dir):
+        cc = CycleCollector(output_dir=str(tmp_data_dir), top_k=5,
+                            save_full_logits=False, tp_rank=1)
+        self._run_prefill(cc)
+        prefill_files = list(tmp_data_dir.glob("prefill_*_text.json"))
+        assert len(prefill_files) == 0
+

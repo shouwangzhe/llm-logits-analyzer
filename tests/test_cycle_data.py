@@ -10,7 +10,7 @@ import pytest
 from pathlib import Path
 
 from logits_analyzer.lib.cycle_data import CycleData
-from .conftest import make_mock_dataset
+from .conftest import make_mock_dataset, make_mock_prefill
 
 
 REQ_ID = "aabbccdd1234"
@@ -18,7 +18,13 @@ REQ_ID = "aabbccdd1234"
 
 @pytest.fixture
 def dataset(tmp_data_dir):
-    make_mock_dataset(tmp_data_dir, request_id=REQ_ID, n_cycles=10)
+    make_mock_dataset(tmp_data_dir, request_id=REQ_ID, n_cycles=10, with_prefill=True)
+    return tmp_data_dir
+
+
+@pytest.fixture
+def dataset_no_prefill(tmp_data_dir):
+    make_mock_dataset(tmp_data_dir, request_id=REQ_ID, n_cycles=10, with_prefill=False)
     return tmp_data_dir
 
 
@@ -85,6 +91,42 @@ class TestCycleDataLoad:
         cd = CycleData(str(dataset))
         # mock dataset 没有 npz 文件
         assert cd.load_logits(0) is None
+
+
+class TestPrefillData:
+    """load_prefill / load_prefill_logits 测试"""
+
+    def test_load_prefill_returns_data(self, dataset):
+        cd = CycleData(str(dataset))
+        prefill = cd.load_prefill(REQ_ID)
+        assert prefill is not None
+        assert prefill["type"] == "prefill"
+        assert prefill["request_id"] == REQ_ID
+
+    def test_load_prefill_token_id(self, dataset):
+        cd = CycleData(str(dataset))
+        prefill = cd.load_prefill(REQ_ID)
+        assert "token_id" in prefill
+        assert prefill["token_id"] == 42  # make_mock_prefill 默认值
+
+    def test_load_prefill_missing(self, dataset_no_prefill):
+        cd = CycleData(str(dataset_no_prefill))
+        assert cd.load_prefill(REQ_ID) is None
+
+    def test_load_prefill_logits_missing(self, dataset):
+        cd = CycleData(str(dataset))
+        # mock dataset 没有 npz 文件
+        assert cd.load_prefill_logits(REQ_ID) is None
+
+    def test_list_requests_includes_prefill_only(self, tmp_data_dir):
+        """只有 prefill 文件（无 cycle 文件）时，list_requests 也应返回 request_id"""
+        prefill = make_mock_prefill("onlyprefill123", token_id=1)
+        path = tmp_data_dir / "prefill_onlyprefill123_text.json"
+        with open(path, "w") as f:
+            json.dump(prefill, f)
+        cd = CycleData(str(tmp_data_dir))
+        reqs = cd.list_requests()
+        assert "onlyprefill123" in reqs
 
 
 class TestCycleDataSummary:
