@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logits-analyzer"
+version = "0.1.0"
+description = "Logits analysis toolkit for LLM inference across multiple frameworks (SGLang, vLLM)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Logits Analyzer Contributors"}
+]
+maintainers = [
+    {name = "Logits Analyzer Contributors"}
+]
+keywords = [
+    "llm",
+    "inference",
+    "logits",
+    "token-analysis",
+    "speculative-decoding",
+    "eagle",
+    "sglang",
+    "vllm",
+    "performance-analysis"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.20.0",
+]
+
+[project.optional-dependencies]
+analysis = [
+    "scipy>=1.7.0",
+    "matplotlib>=3.5.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-html>=4.0.0",
+    "transformers>=4.30.0",
+]
+all = [
+    "scipy>=1.7.0",
+    "matplotlib>=3.5.0",
+    "pytest>=7.0.0",
+    "pytest-html>=4.0.0",
+    "transformers>=4.30.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/logits-analyzer"
+Documentation = "https://github.com/your-org/logits-analyzer/blob/main/SKILLS.md"
+Repository = "https://github.com/your-org/logits-analyzer"
+Issues = "https://github.com/your-org/logits-analyzer/issues"
+Changelog = "https://github.com/your-org/logits-analyzer/blob/main/CHANGELOG.md"
+
+[project.scripts]
+logits-analyzer-collect = "logits_analyzer.collect_requests:main"
+
+[tool.setuptools.packages.find]
+include = ["logits_analyzer*"]
